@@ -260,3 +260,31 @@ fn japanese_file_names_save_open_and_export() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// I2: an object id that names nothing, or isn't a whole number, is an error that names it, for
+/// every command's `ids` and for a target's `id`. Upstream checks the ids of `select.*` (#784) and
+/// the type of a target's ids (#785); elsewhere `{"ids": [a, 999]}` acted on `a` alone, `{"id": 999}`
+/// did nothing and `object.transform` dropped `"2"`, all without a word.
+#[test]
+fn unknown_or_mistyped_ids_are_errors() {
+    let mut s = session();
+    let a = s.execute("shape.rectangle", &json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("shape.ellipse", &json!({"x": 20, "y": 0, "width": 10, "height": 10})).unwrap()["id"].as_u64().unwrap();
+    s.execute("select.set", &json!({"ids": [b]})).unwrap();
+    let art = |s: &mut Session| s.execute("document.inspect", &json!({})).unwrap()["layers"][0]["children"].clone();
+    let before = art(&mut s);
+    let quoted = format!("\"{a}\"");
+    for (cmd, p, needle) in [
+        ("select.set", json!({"ids": [999]}), "no such object id 999"),
+        ("paint.setFill", json!({"ids": [a, 999], "color": "#ff0000"}), "no such object id 999"),
+        ("paint.setFill", json!({"id": 999, "color": "#ff0000"}), "no such object id 999"),
+        ("object.transform", json!({"ids": [999], "matrix": [1, 0, 0, 1, 5, 0]}), "no such object id 999"),
+        ("object.transform", json!({"ids": [a.to_string()], "matrix": [1, 0, 0, 1, 5, 0]}), quoted.as_str()),
+    ] {
+        let e = s.execute(cmd, &p).unwrap_err().to_string();
+        assert!(e.contains(needle), "{cmd} {p}: {e}");
+    }
+    assert_eq!(art(&mut s), before, "nothing painted or moved, the selected object neither");
+    s.execute("paint.setFill", &json!({"id": a, "color": "#ff0000"})).unwrap();
+    assert_ne!(art(&mut s), before, "a real id still works");
+}

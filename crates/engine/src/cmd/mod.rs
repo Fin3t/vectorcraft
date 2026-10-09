@@ -367,8 +367,13 @@ pub fn color_value(v: &Value) -> Option<Color> {
 /// Objects a command targets: explicit `ids` param or the selection.
 pub(crate) fn targets(s: &Session, p: &Value) -> Result<Vec<NodeId>> {
     // Objects given are used as given: a value that isn't an object id fails rather than the
-    // command acting on the selection instead (#785).
-    let object_id = |v: &Value| v.as_u64().map(NodeId).ok_or_else(|| EngineError::Other(format!("object ids are non-negative integers, not {v}")));
+    // command acting on the selection instead (#785), and so does an id that names no object
+    // (the command did nothing with it, without a word).
+    let object_id = |v: &Value| match v.as_u64().map(NodeId) {
+        Some(id) if s.doc()?.doc.node(id).is_some() => Ok(id),
+        Some(_) => Err(EngineError::Other(format!("no such object id {v}"))),
+        None => Err(EngineError::Other(format!("object ids are non-negative integers, not {v}"))),
+    };
     match p.get("ids").filter(|v| !v.is_null()) {
         Some(Value::Array(a)) => return a.iter().map(object_id).collect(),
         Some(v) => return Err(EngineError::Other(format!("`ids` must be an array of object ids, not {v}"))),

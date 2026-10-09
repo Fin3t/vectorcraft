@@ -1076,6 +1076,7 @@ impl Session {
         if let Err(why) = enabled {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
+        self.check_ids(id, params)?;
         // Only top-level commands are journaled (commands that call other commands would otherwise
         // be recorded twice and replay differently).
         if self.depth == 0 {
@@ -1111,6 +1112,16 @@ impl Session {
         if self.depth == self.note_depth {
             self.journal_note.insert(key.to_string(), value);
         }
+    }
+
+    /// `ids` names objects of the active document, for every command that takes it: an entry that
+    /// isn't an object id or names no object fails the command here, as it fails `select.set`
+    /// (#784), instead of being dropped (the command acted on fewer objects, or none, without a word).
+    fn check_ids(&self, cmd: &str, params: &Value) -> Result<()> {
+        if params.get("ids").is_none_or(Value::is_null) || self.doc().is_err() {
+            return Ok(());
+        }
+        cmd::checked_ids_param(self, params, "ids", cmd).map(drop)
     }
 
     /// Run `id` as a step of the running command, which journals its steps (`command.batch`):
