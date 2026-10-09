@@ -163,3 +163,34 @@ fn an_image_opens_at_the_size_its_resolution_declares() {
         assert!((art.width() - w).abs() < 1e-6 && (art.height() - h).abs() < 1e-6, "{what}: the image fills it, {art:?}");
     }
 }
+
+/// I2: a PNG wrote its fully clear pixels as (0, 0, 0, 0), so a game engine's mipmaps pulled black
+/// into the edges of white art. `clearColor` gives clear pixels a colour and `bleed` the colour of
+/// the nearest visible pixel; their alpha stays 0 and visible pixels are untouched. Without either
+/// nothing changes, and `matte` (a GIF / PNG-8 option) on a PNG is a warning, not silence.
+#[test]
+fn png_clear_pixels_take_a_clear_colour_or_bleed() {
+    let mut s = session(40.0, 30.0, 1);
+    s.execute("paint.setStroke", &json!({"none": true})).unwrap();
+    s.execute("paint.setFill", &json!({"color": "#ff0000"})).unwrap();
+    s.execute("shape.rectangle", &json!({"x": 10, "y": 10, "width": 10, "height": 10})).unwrap();
+    let png = |s: &mut Session, extra: Value| {
+        let mut p = json!({"format": "png", "background": "transparent"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        rgba(&b64(&s.execute("document.export", &p).unwrap()))
+    };
+    for (extra, corner) in [
+        (json!({}), [0, 0, 0, 0]),
+        (json!({"clearColor": "white"}), [255, 255, 255, 0]),
+        (json!({"clearColor": "#3366ff"}), [0x33, 0x66, 0xff, 0]),
+        (json!({"bleed": true}), [255, 0, 0, 0]),
+    ] {
+        let img = png(&mut s, extra.clone());
+        assert_eq!(img.get_pixel(0, 0).0, corner, "{extra}");
+        assert_eq!(img.get_pixel(15, 15).0, [255, 0, 0, 255], "{extra}: the art is untouched");
+        assert!(img.pixels().all(|p| p[3] == 0 || p[3] == 255), "{extra}: alpha untouched");
+    }
+    assert!(s.execute("document.export", &json!({"format": "png", "clearColor": "nope"})).is_err());
+    let r = s.execute("document.export", &json!({"format": "png", "matte": "white"})).unwrap();
+    assert!(r["warnings"].to_string().contains("matte"), "{r}");
+}
