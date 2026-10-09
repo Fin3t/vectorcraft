@@ -349,10 +349,16 @@ pub(crate) fn targets(s: &Session, p: &Value) -> Result<Vec<NodeId>> {
     if let Some(ids) = ids_param(p, "ids") {
         return Ok(ids);
     }
-    if let Some(id) = id_param(p, "id") {
-        return Ok(vec![id]);
+    // An `id` that isn't a whole number naming an object is an error: before, `{"id": "2"}`
+    // fell back to the selection and edited other objects. (`ids` is checked in Session::execute.)
+    match p.get("id") {
+        None | Some(Value::Null) => Ok(s.doc()?.selection.objects.clone()),
+        Some(v) => match v.as_u64().map(NodeId) {
+            Some(id) if s.doc()?.doc.node(id).is_some() => Ok(vec![id]),
+            Some(id) => Err(EngineError::Other(format!("no object with id {}", id.0))),
+            None => Err(EngineError::Other(format!("`id` is an object id (a whole number), not {v}"))),
+        },
     }
-    Ok(s.doc()?.selection.objects.clone())
 }
 
 pub(crate) fn ok() -> Result<Value> {

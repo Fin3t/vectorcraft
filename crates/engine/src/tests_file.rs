@@ -260,3 +260,38 @@ fn japanese_file_names_save_open_and_export() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// I2: an object id that names nothing, or isn't a whole number, is an error that names it.
+/// `select.set` dropped such ids and selected nothing (the next command failed with "nothing
+/// selected", far from the cause), and a command given `{"id": "2"}` acted on the selection
+/// instead. `ids` is checked for every command, the `id` of a command's targets in `targets`.
+#[test]
+fn unknown_or_mistyped_ids_are_errors() {
+    let mut s = session();
+    let a = s.execute("shape.rectangle", &json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("shape.ellipse", &json!({"x": 20, "y": 0, "width": 10, "height": 10})).unwrap()["id"].as_u64().unwrap();
+    let quoted = format!("\"{a}\"");
+    for (p, needle) in [
+        (json!({"ids": [999]}), "999"),
+        (json!({"ids": [a.to_string()]}), quoted.as_str()),
+        (json!({"ids": [a, -1]}), "-1"),
+        (json!({"ids": 5}), "list"),
+    ] {
+        let e = s.execute("select.set", &p).unwrap_err().to_string();
+        assert!(e.contains(needle), "{p}: {e}");
+    }
+    s.execute("select.set", &json!({"ids": [a, b]})).unwrap();
+    s.execute("select.set", &json!({"ids": [b]})).unwrap();
+    let fill = |s: &mut Session, id: u64| {
+        let d = s.execute("document.inspect", &json!({})).unwrap();
+        d["layers"][0]["children"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap()["fill"].clone()
+    };
+    let b_fill = fill(&mut s, b);
+    for (id, needle) in [(json!(a.to_string()), quoted.as_str()), (json!(999), "999")] {
+        let e = s.execute("paint.setFill", &json!({"id": id, "color": "#ff0000"})).unwrap_err().to_string();
+        assert!(e.contains(needle), "{id}: {e}");
+    }
+    assert_eq!(fill(&mut s, b), b_fill, "the selected object was not painted instead");
+    s.execute("paint.setFill", &json!({"id": a, "color": "#ff0000"})).unwrap();
+    assert_eq!(fill(&mut s, a), json!("#ff0000"));
+}

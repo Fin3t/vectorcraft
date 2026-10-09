@@ -1046,6 +1046,7 @@ impl Session {
         if let Err(why) = (spec.enabled)(self) {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
+        self.check_ids(id, params)?;
         // Only top-level commands are journaled (commands that call other commands would otherwise
         // be recorded twice and replay differently).
         if self.depth == 0 {
@@ -1086,6 +1087,26 @@ impl Session {
     /// Run `id` as a step of the running command, which journals its steps (`command.batch`):
     /// → the step's result and its params with what it noted ([`Session::note_journal`]), for the
     /// step in the running command's journal entry.
+    /// `ids` names objects of the active document, for every command that takes it: each entry
+    /// must be a whole number naming one, else the command fails here and names the bad entries,
+    /// instead of dropping them and acting on fewer objects (`select.set` selected nothing).
+    fn check_ids(&self, cmd: &str, params: &Value) -> Result<()> {
+        let bad = |msg: String| EngineError::BadParams { cmd: cmd.to_string(), msg };
+        let list = match params.get("ids") {
+            None | Some(Value::Null) => return Ok(()),
+            Some(Value::Array(list)) => list,
+            Some(v) => return Err(bad(format!("`ids` must be a list of object ids, got {v}"))),
+        };
+        let not_ids: Vec<String> = list.iter().filter(|v| v.as_u64().is_none()).map(Value::to_string).collect();
+        if !not_ids.is_empty() {
+            return Err(bad(format!("`ids` holds object ids (whole numbers), not {}", not_ids.join(", "))));
+        }
+        let Ok(st) = self.doc() else { return Ok(()) };
+        let unknown: Vec<String> =
+            list.iter().filter_map(Value::as_u64).filter(|i| st.doc.node(NodeId(*i)).is_none()).map(|i| i.to_string()).collect();
+        if unknown.is_empty() { Ok(()) } else { Err(bad(format!("no object with id {}", unknown.join(", ")))) }
+    }
+
     pub(crate) fn execute_step(&mut self, id: &str, params: &Value) -> Result<(Value, Value)> {
         let outer = (std::mem::take(&mut self.journal_note), self.note_depth);
         self.note_depth = self.depth + 1;
