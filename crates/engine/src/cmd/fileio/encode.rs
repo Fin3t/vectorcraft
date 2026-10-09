@@ -162,6 +162,10 @@ struct RasterOptions {
     dither_amount: Option<u8>,
     transparency: Option<bool>,
     matte: Option<Value>,
+    /// PNG: the colour of fully clear pixels (alpha stays 0).
+    clear_color: Option<Value>,
+    /// PNG: fully clear pixels take the nearest visible pixel's colour.
+    bleed: Option<bool>,
     lossless: Option<bool>,
     lzw: Option<bool>,
     byte_order: Option<String>,
@@ -238,6 +242,14 @@ impl RasterOptions {
                 max_editability: self.max_editability.unwrap_or(false),
                 hidden_layers: self.hidden_layers.unwrap_or(false),
                 embed_icc,
+            },
+            clear: match (self.bleed, &self.clear_color) {
+                (Some(true), _) => vectorcraft_render::encode::clear::ClearPixels::Bleed,
+                (_, Some(v)) => match background(v).map_err(|e| bad(C, format!("clearColor: {e}")))? {
+                    Some(c) => vectorcraft_render::encode::clear::ClearPixels::Color(c),
+                    None => vectorcraft_render::encode::clear::ClearPixels::Keep,
+                },
+                _ => vectorcraft_render::encode::clear::ClearPixels::Keep,
             },
         })
     }
@@ -461,6 +473,9 @@ fn encode_files(doc: &Document, f: &Format, p: &Value) -> Result<Encoded> {
                 _ => MapKind::None,
             };
             let mut enc = Encoded::default();
+            if f.id == "png" && o.matte.is_some() {
+                enc.warnings.push("matte applies to GIF and PNG-8 (edges blended over it); a PNG keeps its alpha: clearColor or bleed sets the colour of its clear pixels".into());
+            }
             let mut renderer = vectorcraft_render::Renderer::new();
             for b in chosen {
                 let region = doc.artboards.get(b).ok_or_else(|| bad(C, format!("no artboard {}", b + 1)))?.rect;

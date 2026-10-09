@@ -6,6 +6,7 @@
 //! further (web snap, colour table edits, lossy GIF, comments); [`psd`] writes layered bitmaps.
 
 pub mod bmp;
+pub mod clear;
 pub mod gif;
 pub mod jpeg;
 pub mod png;
@@ -60,6 +61,9 @@ pub struct RasterExportOptions {
     pub tga: tga::TgaOptions,
     /// PSD colour model, layers and profile.
     pub psd: psd::PsdOptions,
+    /// PNG: what fully clear pixels hold (alpha stays 0): black, a colour, or the nearest visible
+    /// pixel's colour (`Bleed`, so mipmaps don't pull dark edges in).
+    pub clear: clear::ClearPixels,
 }
 
 impl Default for RasterExportOptions {
@@ -76,6 +80,7 @@ impl Default for RasterExportOptions {
             bmp: bmp::BmpOptions::default(),
             tga: tga::TgaOptions::default(),
             psd: psd::PsdOptions::default(),
+            clear: clear::ClearPixels::default(),
         }
     }
 }
@@ -106,7 +111,9 @@ impl RasterExportOptions {
     pub fn encode(&self, img: &Rendered, format: RasterFormat) -> Result<Vec<u8>, String> {
         match format {
             RasterFormat::Png => {
-                png::encode(&img.to_straight(), img.width, img.height, &png::PngOptions { ppi: Some(self.ppi), interlaced: self.interlaced })
+                let mut px = img.to_straight();
+                clear::apply(&mut px, img.width, img.height, self.clear);
+                png::encode(&px, img.width, img.height, &png::PngOptions { ppi: Some(self.ppi), interlaced: self.interlaced })
             }
             RasterFormat::Jpeg => {
                 let px = match self.jpeg.color_model {
