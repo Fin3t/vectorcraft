@@ -96,7 +96,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "command_batch",
             "Run several commands",
-            "Run steps in order; each edit is its own undo step. Returns completed, failed and results. Stops on the first error by default.",
+            "Run steps in order; each edit is its own undo step. Returns completed, failed and results. Stops on the first error by default. A string param \"$N\" or \"$N.key.0\" is step N's result (1-based), e.g. {\"ids\":[\"$1.id\"]}; \"$$…\" is a literal $.",
             obj(
                 json!({"steps": {"type":"array", "items":obj(json!({"id":string("Command id"),"params":{"type":"object"}}), &["id"])}, "stop_on_error":{"type":"boolean", "default":true}}),
                 &["steps"],
@@ -899,6 +899,8 @@ fn command_batch(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
         Some(v) => v.as_bool().ok_or("`stop_on_error` must be a boolean")?,
     };
     let (mut completed, mut failed, mut results) = (0, 0, Vec::new());
+    // what each step returned, for `"$N.key"` references (a failed step returned null)
+    let mut values: Vec<Value> = Vec::new();
     for step in steps {
         let result = vectorcraft_engine::guard::catch_panic(|| {
             let args = step.as_object().ok_or("each step must be an object")?;
@@ -908,7 +910,7 @@ fn command_batch(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
             let id = req_str(args, "id")?;
             let params = match args.get("params") {
                 None | Some(Value::Null) => json!({}),
-                Some(v @ Value::Object(_)) => v.clone(),
+                Some(v @ Value::Object(_)) => vectorcraft_engine::refs::substitute(v, &values)?,
                 Some(_) => return Err("`params` must be an object".into()),
             };
             b.call("engine.execute", json!({"command":id,"params":params}))
@@ -917,10 +919,12 @@ fn command_batch(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
         match result {
             Ok(v) => {
                 completed += 1;
+                values.push(v.clone());
                 results.push(json!({"ok":true,"result":v}));
             }
             Err(e) => {
                 failed += 1;
+                values.push(Value::Null);
                 results.push(json!({"ok":false,"error":e}));
                 if stop {
                     break;

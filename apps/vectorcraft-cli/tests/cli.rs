@@ -22,6 +22,33 @@ fn commands_prints_catalogue() {
     assert!(ids.contains(&"shape.rectangle") && ids.contains(&"object.group") && ids.contains(&"file.export"));
 }
 
+/// I2: `run` steps use earlier results like FilmCraft's and EffectCraft's scripts: `"$2.id"` is
+/// the `id` command step 2 returned (exports don't count). Before, the strings reached
+/// `select.set` unresolved and the selection stayed empty without an error.
+#[test]
+fn run_refers_to_earlier_results() {
+    let run = |extra: &[&str]| {
+        Command::new(BIN)
+            .args(["run", "--cmd", "file.new", "--params", r#"{"width":64,"height":64}"#])
+            .args(["--cmd", "shape.rectangle", "--params", r#"{"x":4,"y":4,"width":20,"height":20}"#])
+            .args(["--cmd", "shape.ellipse", "--params", r#"{"x":10,"y":10,"width":20,"height":20}"#])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let out = run(&["--cmd", "select.set", "--params", r#"{"ids":["$2.id","$3.id"]}"#, "--cmd", "document.inspect", "--params", "{}"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let lines: Vec<Value> = String::from_utf8(out.stdout).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let (a, b) = (lines[1]["result"]["id"].as_u64().unwrap(), lines[2]["result"]["id"].as_u64().unwrap());
+    let sel = &lines[4]["result"]["selection"];
+    let picked: Vec<u64> = sel.as_array().unwrap().iter().filter_map(|v| v.as_u64().or_else(|| v["id"].as_u64())).collect();
+    assert_eq!(picked, [a, b], "{sel}");
+    // a reference to a step that has not run is an error naming it
+    let out = run(&["--cmd", "select.set", "--params", r#"{"ids":["$9.id"]}"#]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("refers to step 9"), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
 #[test]
 fn run_batch_exports() {
     let svg = tmp("batch.svg");

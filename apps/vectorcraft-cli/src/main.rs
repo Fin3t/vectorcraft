@@ -66,7 +66,9 @@ USAGE:
   vectorcraft-cli run [--in FILE] [--cmd ID [--params JSON]]... [--export FILE]... [--scale N]
       Headless batch: open FILE (any readable format) or start a new document, run commands in
       order, export each FILE in the format its extension picks (see Writable formats). Prints one
-      JSON result per step.
+      JSON result per step. A string param \"$N\" or \"$N.key.0\" is what command step N
+      returned (1-based; exports don't count), e.g. --params '{\"ids\":[\"$2.id\",\"$3.id\"]}';
+      \"$$5\" is the text \"$5\".
 
   vectorcraft-cli commands
       Print the command catalogue as JSON.
@@ -256,11 +258,15 @@ fn run(args: &[String]) -> Result<(), String> {
     } else if !matches!(steps.first(), Some(Step::Cmd(id, _)) if id == "file.new") {
         h.ensure_document();
     }
+    // what each command step returned, for `"$N.key"` references (exports don't count)
+    let mut results: Vec<Value> = vec![];
     for step in steps {
         match step {
             Step::Cmd(id, params) => {
+                let params = vectorcraft_engine::refs::substitute(&params, &results).map_err(|e| format!("{id}: {e}"))?;
                 let r = h.call("engine.execute", json!({"command": id, "params": params})).map_err(|e| format!("{id}: {e}"))?;
                 emit(json!({"step": "cmd", "command": id, "result": r}))?;
+                results.push(r);
             }
             Step::Export(path) => {
                 let r = h.call("app.export", json!({"path": path, "scale": scale})).map_err(|e| format!("export {path}: {e}"))?;

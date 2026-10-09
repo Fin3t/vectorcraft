@@ -40,6 +40,32 @@ fn conventions_catalog_and_strict_keys() {
     assert_eq!(rpc(&mut s, "ping", json!({}))["result"], json!({}));
 }
 
+/// I2: `command_batch` steps use earlier results like FilmCraft's: `"$1.id"` is step 1's `id`.
+#[test]
+fn command_batch_refers_to_earlier_results() {
+    let mut s = Server::new(Box::new(Headless::with_document()));
+    let steps = json!([
+        {"id":"shape.rectangle","params":{"x":0,"y":0,"width":20,"height":20}},
+        {"id":"shape.ellipse","params":{"x":30,"y":0,"width":20,"height":20}},
+        {"id":"select.set","params":{"ids":["$1.id","$2.id"]}},
+        {"id":"document.inspect"},
+    ]);
+    let r = call(&mut s, "command_batch", json!({"steps":steps}));
+    assert_eq!(r["isError"], false, "{r}");
+    let p = payload(&r);
+    let (a, b) = (p["results"][0]["result"]["id"].clone(), p["results"][1]["result"]["id"].clone());
+    let sel = p["results"][3]["result"]["selection"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| if v.is_object() { v["id"].clone() } else { v.clone() })
+        .collect::<Vec<_>>();
+    assert_eq!(sel, [a, b], "{p}");
+    let r = call(&mut s, "command_batch", json!({"steps":[{"id":"select.set","params":{"ids":["$4.id"]}}]}));
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(payload(&r)["results"][0]["error"].as_str().unwrap().contains("refers to step 4"), "{r}");
+}
+
 #[test]
 fn conventions_commands_batch_and_bounded_preview() {
     let mut s = Server::new(Box::new(Headless::with_document()));

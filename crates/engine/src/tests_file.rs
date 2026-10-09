@@ -260,3 +260,46 @@ fn japanese_file_names_save_open_and_export() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// I2: with `refs`, a batch step uses what an earlier one returned: `"$2.id"` is step 2's `id`
+/// (steps count from 1, as in FilmCraft's and EffectCraft's scripts). A reference to a step that
+/// has not run fails the batch with a reason and rolls it back. Without `refs` (recorded actions
+/// replay through the batch) the strings stay text; the journal keeps the resolved params.
+#[test]
+fn batch_steps_refer_to_earlier_results() {
+    let mut s = session();
+    let r = s
+        .execute(
+            "command.batch",
+            &json!({"commands": [
+                {"command": "shape.rectangle", "params": {"x": 0, "y": 0, "width": 50, "height": 50}},
+                {"command": "shape.ellipse", "params": {"x": 60, "y": 0, "width": 50, "height": 50}},
+                {"command": "select.set", "params": {"ids": ["$1.id", "$2.id"]}},
+            ], "refs": true}),
+        )
+        .unwrap();
+    let (a, b) = (r["results"][0]["id"].as_u64().unwrap(), r["results"][1]["id"].as_u64().unwrap());
+    let sel = s.execute("document.inspect", &json!({})).unwrap()["selection"].clone();
+    let picked: Vec<u64> = sel.as_array().unwrap().iter().filter_map(|v| v.as_u64().or_else(|| v["id"].as_u64())).collect();
+    assert_eq!(picked, [a, b], "{sel}");
+    let before = s.doc().unwrap().doc.layers[0].children().unwrap().len();
+    let e = s
+        .execute(
+            "command.batch",
+            &json!({"commands": [
+                {"command": "shape.rectangle", "params": {"x": 0, "y": 0, "width": 5, "height": 5}},
+                {"command": "select.set", "params": {"ids": ["$5.id"]}},
+            ], "refs": true}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("refers to step 5"), "{e}");
+    assert_eq!(s.doc().unwrap().doc.layers[0].children().unwrap().len(), before, "rolled back");
+    // the journal holds the resolved ids, without `refs`
+    let entry = &s.journal.iter().rev().find(|(c, _)| c == "command.batch").unwrap().1;
+    assert_eq!(entry["commands"][2]["params"]["ids"], json!([a, b]), "{entry}");
+    assert!(entry.get("refs").is_none(), "{entry}");
+    // without `refs` a "$…" string is text, as a recorded action typed it
+    let e = s.execute("command.batch", &json!({"commands": [{"command": "select.set", "params": {"ids": ["$1.id"]}}]}));
+    assert!(e.is_err() || s.execute("document.inspect", &json!({})).unwrap()["selection"] != json!([a]));
+}

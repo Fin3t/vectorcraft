@@ -8,12 +8,14 @@ use crate::{DocState, EngineError};
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let mut cmds = p.get("commands").and_then(Value::as_array).ok_or_else(|| bad("command.batch", "missing commands"))?.clone();
     let label = str_param(p, "label").unwrap_or("Batch").to_string();
+    // Opt-in, so a recorded action whose text reads like a reference (a price, "$5") replays as typed.
+    let refs = p.get("refs").and_then(Value::as_bool).unwrap_or(false);
     // What an error rolls back besides the documents: session-level state a step may change
     // (paint defaults, drawing mode, clipboard, the Untitled-N count).
     let saved = (s.paint.clone(), s.fill_active, s.draw_mode, s.draw_inside, s.clipboard.clone(), s.untitled_counter);
     let (start, active): (Vec<u64>, _) = (s.docs.iter().map(|d| d.uid).collect(), s.active);
     s.batch_stash = Some(vec![]);
-    let r = run_steps(s, &label, &mut cmds);
+    let r = run_steps(s, &label, &mut cmds, refs);
     let stash = s.batch_stash.take().unwrap_or_default();
     let results = match r {
         Ok(results) => results,
@@ -36,6 +38,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let mut entry = p.clone();
     if let Some(o) = entry.as_object_mut() {
         o.insert("commands".into(), Value::Array(cmds));
+        // the steps hold their resolved params: a replay must not resolve them again
+        o.remove("refs");
     }
     s.journal.push(("command.batch".into(), entry));
     Ok(json!({ "results": results }))
@@ -43,7 +47,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Run the steps → their results. Each runs inside an interaction of the document active when it
 /// starts (one for all the steps in that document), so a step may open, switch or close documents.
-fn run_steps(s: &mut Session, label: &str, cmds: &mut [Value]) -> Result<Vec<Value>> {
+fn run_steps(s: &mut Session, label: &str, cmds: &mut [Value], refs: bool) -> Result<Vec<Value>> {
     let mut results = Vec::with_capacity(cmds.len());
     for c in cmds {
         let id = c.get("command").and_then(Value::as_str).unwrap_or("").to_string();
@@ -53,12 +57,19 @@ fn run_steps(s: &mut Session, label: &str, cmds: &mut [Value]) -> Result<Vec<Val
         if s.active().is_some() {
             s.begin_interaction(label)?;
         }
-        let params = c.get("params").cloned().unwrap_or(json!({}));
+        // with `refs`, `"$N.key"` is what step N returned (crate::refs)
+        let raw = c.get("params").cloned().unwrap_or(json!({}));
+        let params = if refs {
+            crate::refs::substitute(&raw, &results).map_err(|e| bad("command.batch", format!("step {}: {e}", results.len() + 1)))?
+        } else {
+            raw.clone()
+        };
         let (v, noted) =
             s.execute_step(&id, &params).map_err(|e| EngineError::Other(format!("batch step {} (`{id}`) failed: {e}", results.len())))?;
         // The step's journal entry records what it took from the preferences or the clock (a
-        // save's date, a new document's), as a command of its own would.
-        if noted != params
+        // save's date, a new document's), as a command of its own would, and the resolved
+        // references.
+        if noted != raw
             && let Some(c) = c.as_object_mut()
         {
             c.insert("params".into(), noted);
